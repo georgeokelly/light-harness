@@ -3,19 +3,57 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-MODE_FILE="${ROOT_DIR}/.agent-memory/tmp/pretooluse-mode"
 RED=""
 GREEN=""
+BLUE=""
+ORANGE=""
 RESET=""
+TARGET_ROOT="."
 
 if [[ -t 1 ]]; then
   RED=$'\033[31m'
   GREEN=$'\033[32m'
+  BLUE=$'\033[34m'
+  ORANGE=$'\033[38;5;208m'
   RESET=$'\033[0m'
 fi
 
 usage() {
-  echo "Usage: bash scripts/set_pretooluse_mode.sh <normal|sandbox|show>"
+  echo "Usage: bash scripts/set_pretooluse_mode.sh [--target-root <path>] <normal|sandbox|show>"
+}
+
+print_tag() {
+  local level="$1"
+  local message="$2"
+  local color=""
+  case "${level}" in
+    error|warn)
+      color="${RED}"
+      ;;
+    ok|done)
+      color="${GREEN}"
+      ;;
+    info)
+      color="${BLUE}"
+      ;;
+    skip)
+      color="${ORANGE}"
+      ;;
+  esac
+  if [[ -n "${color}" && -n "${RESET}" ]]; then
+    printf '%s[%s]%s %s\n' "${color}" "${level}" "${RESET}" "${message}"
+  else
+    printf '[%s] %s\n' "${level}" "${message}"
+  fi
+}
+
+resolve_from_repo_root() {
+  local path="$1"
+  if [[ "${path}" = /* ]]; then
+    printf '%s' "${path}"
+  else
+    printf '%s' "${ROOT_DIR}/${path}"
+  fi
 }
 
 color_for_mode() {
@@ -56,16 +94,52 @@ write_mode() {
   local mode="$1"
   mkdir -p "$(dirname "${MODE_FILE}")"
   printf '%s\n' "${mode}" > "${MODE_FILE}"
-  echo "[ok] pre-tool-use mode set to $(format_mode "${mode}")"
-  echo "[info] mode file: ${MODE_FILE}"
+  print_tag "ok" "pre-tool-use mode set to $(format_mode "${mode}")"
+  print_tag "info" "mode file: ${MODE_FILE}"
 }
 
-if [[ $# -ne 1 ]]; then
+MODE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target-root)
+      if [[ $# -lt 2 ]]; then
+        print_tag "error" "--target-root requires a path"
+        usage
+        exit 1
+      fi
+      TARGET_ROOT="$2"
+      shift 2
+      ;;
+    normal|sandbox|show)
+      if [[ -n "${MODE}" ]]; then
+        print_tag "error" "mode already provided: ${MODE}"
+        usage
+        exit 1
+      fi
+      MODE="$1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      print_tag "error" "unknown argument: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "${MODE}" ]]; then
   usage
   exit 1
 fi
 
-case "$1" in
+TARGET_ROOT_DIR="$(resolve_from_repo_root "${TARGET_ROOT}")"
+MODE_FILE="${TARGET_ROOT_DIR}/.agent-memory/tmp/pretooluse-mode"
+
+case "${MODE}" in
   normal)
     write_mode "normal"
     ;;
@@ -73,13 +147,11 @@ case "$1" in
     write_mode "sandbox"
     ;;
   show)
-    echo "[info] pre-tool-use mode: $(format_mode "$(current_mode)")"
-    ;;
-  -h|--help)
-    usage
+    print_tag "info" "pre-tool-use mode: $(format_mode "$(current_mode)")"
+    print_tag "info" "mode file: ${MODE_FILE}"
     ;;
   *)
-    echo "[error] unknown mode: $1"
+    print_tag "error" "unknown mode: ${MODE}"
     usage
     exit 1
     ;;

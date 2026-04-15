@@ -6,10 +6,30 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
 JsonDict = dict[str, Any]
+HOOK_PLACEHOLDER_PATTERN = re.compile(r'python3\s+"?scripts/light_harness_hook\.py"?')
+
+
+def color_tag(level: str) -> str:
+    if not sys.stdout.isatty():
+        return f"[{level}]"
+    colors = {
+        "ok": "\033[32m",
+        "done": "\033[32m",
+        "info": "\033[34m",
+        "skip": "\033[38;5;208m",
+        "error": "\033[31m",
+        "warn": "\033[31m",
+    }
+    color = colors.get(level)
+    if not color:
+        return f"[{level}]"
+    return f"{color}[{level}]\033[0m"
 
 
 def read_json(path: Path) -> JsonDict:
@@ -75,6 +95,63 @@ def load_manifest(path: Path) -> JsonDict:
     return manifest
 
 
+def rewrite_hook_command(command: str, hook_script: str, workspace_root: str) -> str:
+    """Rewrite one hook command for a target workspace.
+
+    Args:
+        command: Original command string from manifest.
+        hook_script: Absolute path to `light_harness_hook.py`.
+        workspace_root: Target workspace root path.
+
+    Returns:
+        Command string with workspace-bound hook invocation.
+    """
+
+    if "light_harness_hook.py" not in command:
+        return command
+    prefix = f'LIGHT_HARNESS_ROOT="{workspace_root}" python3 "{hook_script}"'
+    return HOOK_PLACEHOLDER_PATTERN.sub(prefix, command)
+
+
+def rewrite_manifest_for_target(manifest: JsonDict, hook_script: str, workspace_root: str) -> JsonDict:
+    """Rewrite all harness hook commands in a manifest for target deployment.
+
+    Args:
+        manifest: Raw runtime manifest.
+        hook_script: Absolute path to `light_harness_hook.py`.
+        workspace_root: Target workspace root path.
+
+    Returns:
+        A rewritten manifest object.
+    """
+
+    result = copy.deepcopy(manifest)
+    managed = result.get("managedCommands", [])
+    if not isinstance(managed, list):
+        raise ValueError("manifest field `managedCommands` must be a list")
+    result["managedCommands"] = [
+        rewrite_hook_command(str(command), hook_script, workspace_root) for command in managed
+    ]
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            rewritten: JsonDict = {}
+            for key, item in value.items():
+                if key == "command" and isinstance(item, str):
+                    rewritten[key] = rewrite_hook_command(item, hook_script, workspace_root)
+                else:
+                    rewritten[key] = walk(item)
+            return rewritten
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        return value
+
+    config = result.get("config", {})
+    if isinstance(config, dict):
+        result["config"] = walk(config)
+    return result
+
+
 def event_names(existing_hooks: JsonDict, template_hooks: JsonDict) -> list[str]:
     """Return deterministic event order for merge operations.
 
@@ -104,7 +181,15 @@ def is_managed_command(entry: Any, managed_commands: set[str]) -> bool:
         True when the handler command is harness-managed, else False.
     """
 
-    return isinstance(entry, dict) and entry.get("command") in managed_commands
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    if command in managed_commands:
+        return True
+    # Also clean previously deployed variants across different target roots.
+    return "light_harness_hook.py" in command and "--event" in command
 
 
 def strip_managed_entries(entries: list[Any], managed_commands: set[str]) -> list[Any]:
@@ -222,6 +307,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True, help="runtime manifest path")
     parser.add_argument("--target", required=True, help="runtime config target path")
+    parser.add_argument(
+        "--hook-script",
+        help="absolute path to light_harness_hook.py for command rewrite",
+    )
+    parser.add_argument(
+        "--workspace-root",
+        help="target workspace root for LIGHT_HARNESS_ROOT rewrite",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print summary without writing")
     return parser.parse_args()
 
@@ -238,19 +331,30 @@ def main() -> int:
     target_path = Path(args.target)
 
     manifest = load_manifest(manifest_path)
+    hook_script = args.hook_script
+    workspace_root = args.workspace_root
+    if (hook_script and not workspace_root) or (workspace_root and not hook_script):
+        raise ValueError("--hook-script and --workspace-root must be provided together")
+    if hook_script and workspace_root:
+        manifest = rewrite_manifest_for_target(
+            manifest,
+            str(Path(hook_script).resolve()),
+            str(Path(workspace_root).resolve()),
+        )
+
     target = read_json(target_path)
     merged = merge_runtime_config(manifest, target)
 
     if args.dry_run:
         print(
-            f"[dry-run] {manifest['runtime']} merge into {target_path} "
+            f"{color_tag('info')} dry-run: {manifest['runtime']} merge into {target_path} "
             f"({len(manifest['managedCommands'])} managed commands)"
         )
         return 0
 
     write_json(target_path, merged)
     print(
-        f"[ok] wrote {target_path} "
+        f"{color_tag('ok')} wrote {target_path} "
         f"({len(manifest['managedCommands'])} managed commands)"
     )
     return 0

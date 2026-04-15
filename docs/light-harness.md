@@ -15,7 +15,7 @@ Runtime adapter files (for example `.cursor/`) are deployment targets, not sourc
 
 | Capability | Rule | Hook |
 | --- | --- | --- |
-| Intent preflight fields | Define required fields and examples | Block implementation-heavy prompts when preflight is missing |
+| Intent preflight fields | Define required fields and examples | Strict block enforced at pre-shell/pre-tool stage |
 | Scope guard | Define planned scope semantics | Detect edits outside planned scope and flag |
 | Code-change reasoning chain | Define non-skipping step-by-step chain requirement | At stop, warn/block when code changed but chain is missing in record |
 | Risk tiering | Define R0-R3 tiers and approval policy | Block high-risk shell commands without approval marker |
@@ -58,7 +58,7 @@ Recommended files:
 
 ## Rollout
 
-1. Enable rules and strict hooks for missing preflight and high-risk commands.
+1. Enable rules and strict hooks for missing preflight at pre-tool stage and high-risk commands.
 2. Stabilize templates and record schema.
 3. Add retry budget enforcement hooks.
 4. Add metrics collection for:
@@ -80,6 +80,8 @@ Recommended files:
   - `scripts/deploy_cursor_runtime.sh`
   - `scripts/deploy_codex_runtime.sh`
   - `scripts/deploy_claude_runtime.sh`
+  - `scripts/uninstall.sh` (rollback / remove runtime settings)
+  - `scripts/uninstall_runtime_config.py` (runtime uninstall core helper)
 - Local adapter outputs:
   - `.cursor/`
   - `.codex/`
@@ -90,5 +92,7 @@ Deploy scripts are merge-aware by default:
 - Cursor merges harness-managed hooks into `.cursor/hooks.json`
 - Codex merges harness-managed hooks into `.codex/hooks.json` and minimally ensures `.codex/config.toml` enables `codex_hooks`
 - Claude Code merges harness-managed hooks into `.claude/settings.local.json` by default, with `--scope project` available for `.claude/settings.json`
+- Deploy scripts auto-initialize `.agent-memory/records/current/` in the target workspace unless `--no-init` is set
+- Deployed hook commands include `LIGHT_HARNESS_ROOT=<target-workspace-root>` to ensure state is read from the target workspace
 
 For cross-runtime details and limitations, see `docs/adapters.md`.

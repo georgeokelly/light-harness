@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import shlex
 import sys
@@ -37,11 +38,20 @@ RECORD_REQUIRED_HEADINGS_V1_PLUS = [
 ]
 
 
+def source_repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def workspace_root() -> Path:
+    override = os.environ.get("LIGHT_HARNESS_ROOT", "").strip()
+    if override:
+        return Path(override).resolve()
+
     # scripts/light_harness_hook.py -> repo root is parents[1]
     return Path(__file__).resolve().parents[1]
 
 
+SOURCE_ROOT = source_repo_root()
 ROOT = workspace_root()
 STATE_DIR = ROOT / ".agent-memory" / "records" / "current"
 TMP_DIR = ROOT / ".agent-memory" / "tmp"
@@ -92,6 +102,18 @@ SHELL_WRAPPER_COMMANDS = {"env", "sudo", "command", "exec", "nohup", "time"}
 SHELL_COMMAND_EXECUTORS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 SHELL_COMMAND_FLAGS = {"-c", "-lc", "-ic", "--command"}
 MAX_COMMAND_PARSE_DEPTH = 6
+IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".heic",
+    ".tif",
+    ".tiff",
+}
 
 
 def utc_now() -> str:
@@ -186,10 +208,57 @@ def extract_text(value: Any) -> str:
     return ""
 
 
+def extract_prompt_text(value: Any) -> str:
+    """Extract user prompt text only for beforeSubmitPrompt intent checks.
+
+    This intentionally ignores shell/file-path style keys to avoid false positives
+    when payloads include metadata or prior tool context.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (extract_prompt_text(v) for v in value)))
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in (
+            "prompt",
+            "input",
+            "text",
+            "message",
+            "userPrompt",
+            "user_prompt",
+            "query",
+            "content",
+        ):
+            item = value.get(key)
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, (list, dict)):
+                nested = extract_prompt_text(item)
+                if nested:
+                    parts.append(nested)
+
+        for nested_key in ("messages", "conversation", "turns"):
+            nested_value = value.get(nested_key)
+            if isinstance(nested_value, (list, dict)):
+                nested_text = extract_prompt_text(nested_value)
+                if nested_text:
+                    parts.append(nested_text)
+        return "\n".join(parts)
+    return ""
+
+
 def read_text(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def init_command_hint() -> str:
+    init_script = SOURCE_ROOT / "scripts" / "init_local_state.sh"
+    return f'bash "{init_script}" --target-root "{ROOT}"'
 
 
 def extract_path_value(value: Any) -> str:
@@ -579,20 +648,133 @@ def has_approval(risk: str) -> bool:
     return False
 
 
-def has_implementation_intent(prompt: str) -> bool:
-    if not prompt.strip():
+def looks_like_image_reference(text: str) -> bool:
+    value = text.strip().lower()
+    if not value:
         return False
-    pattern = re.compile(
+    if value.startswith("image/") or "image/" in value:
+        return True
+    if any(value.endswith(ext) for ext in IMAGE_EXTENSIONS):
+        return True
+    return False
+
+
+def payload_contains_image_input(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_lower = key.lower()
+            if key_lower in {
+                "mime",
+                "mimetype",
+                "mime_type",
+                "contenttype",
+                "content_type",
+                "mediatype",
+                "media_type",
+            } and isinstance(item, str):
+                if "image/" in item.lower():
+                    return True
+            if key_lower in {"type", "kind"} and isinstance(item, str):
+                if "image" in item.lower():
+                    return True
+            if key_lower in {
+                "path",
+                "file",
+                "filepath",
+                "file_path",
+                "uri",
+                "url",
+                "name",
+                "filename",
+            } and isinstance(item, str):
+                if looks_like_image_reference(item):
+                    return True
+            if payload_contains_image_input(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(payload_contains_image_input(item) for item in value)
+    if isinstance(value, str):
+        return looks_like_image_reference(value)
+    return False
+
+
+def has_implementation_intent(prompt: str, payload: dict[str, Any]) -> bool:
+    text = prompt.strip()
+    if not text:
+        return False
+
+    execution_cue_pattern = re.compile(
         r"("
-        r"implement|fix|refactor|write code|edit|modify|change|build|"
-        r"add|create|update|upgrade|remove|delete|rename|move|"
-        r"configure|setup|set up|apply|patch|go ahead|"
-        r"实现|修复|重构|写代码|修改|改动|新增|增加|创建|更新|删除|重命名|移动|"
-        r"配置|继续实现|开始实现|开始改|直接改"
+        r"please|pls|go ahead|do it|apply now|fix it|implement it|"
+        r"help me|can you|could you|"
+        r"请帮我|帮我|请直接|直接|现在|马上|开始|继续|执行|落地|"
+        r"实现一下|修一下|改一下|更新一下|处理一下"
         r")",
         re.IGNORECASE,
     )
-    return bool(pattern.search(prompt))
+    question_like_pattern = re.compile(
+        r"(\?|？|\bhow\b|\bwhy\b|\bwhat\b|\bwhich\b|"
+        r"怎么|如何|为什么|为何|吗|呢)",
+        re.IGNORECASE,
+    )
+    has_execution_cue = bool(execution_cue_pattern.search(text))
+    is_question_like = bool(question_like_pattern.search(text))
+
+    strong_code_pattern = re.compile(
+        r"("
+        r"implement|fix|refactor|write code|edit code|modify code|patch|"
+        r"修复|重构|写代码|改代码|实现|补丁"
+        r")",
+        re.IGNORECASE,
+    )
+    if strong_code_pattern.search(text):
+        # Avoid blocking question-style prompts unless user clearly asks to execute.
+        if is_question_like and not has_execution_cue:
+            return False
+        return True
+
+    weak_action_pattern = re.compile(
+        r"("
+        r"add|create|update|upgrade|remove|delete|rename|move|change|"
+        r"configure|setup|set up|apply|go ahead|"
+        r"新增|增加|创建|更新|删除|重命名|移动|修改|改动|配置|继续"
+        r")",
+        re.IGNORECASE,
+    )
+    code_context_pattern = re.compile(
+        r"("
+        r"code|script|function|class|module|api|endpoint|repo|git|hook|deploy|"
+        r"test|lint|build|compile|preflight|record|workflow|runtime|"
+        r"代码|脚本|函数|类|模块|接口|仓库|钩子|部署|测试|构建|编译|"
+        r"预检|记录|工作流|运行时|文件"
+        r")",
+        re.IGNORECASE,
+    )
+    code_path_pattern = re.compile(
+        r"[A-Za-z0-9_\-./]+\.(?:py|js|jsx|ts|tsx|go|rs|java|kt|c|h|cpp|hpp|"
+        r"cc|cxx|cs|rb|php|sh|sql|toml|yaml|yml|json)\b",
+        re.IGNORECASE,
+    )
+    image_prompt_pattern = re.compile(
+        r"("
+        r"image|images|picture|photo|screenshot|diagram|drawio|mockup|icon|logo|"
+        r"图片|截图|配图|插图|画图|示意图|草图"
+        r")",
+        re.IGNORECASE,
+    )
+
+    has_weak_action = bool(weak_action_pattern.search(text))
+    has_code_context = bool(code_context_pattern.search(text) or code_path_pattern.search(text))
+    has_image_context = bool(image_prompt_pattern.search(text) or payload_contains_image_input(payload))
+
+    if has_weak_action and has_code_context and has_execution_cue:
+        return True
+
+    if has_image_context and not has_code_context:
+        return False
+
+    return False
 
 
 def validate_preflight(strict: bool) -> int:
@@ -600,7 +782,7 @@ def validate_preflight(strict: bool) -> int:
     if not preflight:
         message = (
             "Missing preflight: .agent-memory/records/current/preflight.md. "
-            "Run `bash scripts/init_local_state.sh` first."
+            f"Run `{init_command_hint()}` first."
         )
         if strict:
             return block(message)
@@ -629,11 +811,13 @@ def validate_preflight(strict: bool) -> int:
 
 
 def on_before_submit_prompt(payload: dict[str, Any], strict: bool) -> int:
-    prompt_text = extract_text(payload)
-    if not has_implementation_intent(prompt_text):
+    _ = strict  # Prompt gate is advisory-first to avoid blocking plain requests.
+    prompt_text = extract_prompt_text(payload)
+    if not has_implementation_intent(prompt_text, payload):
         info("Prompt appears non-implementation-heavy. Skipping strict preflight gate.")
         return 0
-    return validate_preflight(strict=strict)
+    info("Implementation intent detected at prompt stage; running advisory preflight check.")
+    return validate_preflight(strict=False)
 
 
 def on_before_shell_execution(payload: dict[str, Any], strict: bool) -> int:
@@ -744,7 +928,7 @@ def on_stop(payload: dict[str, Any], strict: bool) -> int:
     if not record:
         warn(
             "Record file missing at stop: .agent-memory/records/current/record.md "
-            "(run `bash scripts/init_local_state.sh`)."
+            f"(run `{init_command_hint()}`)."
         )
         return 0
 

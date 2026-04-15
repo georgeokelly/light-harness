@@ -20,6 +20,8 @@ Lightweight harness for daily AI coding tasks:
 - `scripts/deploy_cursor_runtime.sh`: deploy rules/hooks into local `.cursor/` adapter
 - `scripts/deploy_codex_runtime.sh`: deploy hooks/config into local `.codex/` adapter
 - `scripts/deploy_claude_runtime.sh`: deploy hooks into local `.claude/` adapter
+- `scripts/uninstall.sh`: short uninstall entry (recommended)
+- `scripts/uninstall_runtime_config.py`: uninstall harness-managed runtime settings from a target workspace
 - `scripts/set_pretooluse_mode.sh`: switch pre-tool-use enforcement between `normal` and `sandbox`
 - `scripts/init_local_state.sh`: initialize local state files from templates
 - `templates/light-harness-preflight.md`: preflight template
@@ -32,7 +34,7 @@ Hooks provide hard backstops for high-value constraints.
 
 This project intentionally treats some constraints as hook-enforced:
 
-- Missing preflight before implementation-heavy prompts
+- Missing preflight before shell/tool execution
 - High-risk shell commands without explicit approval
 - Scope expansion outside declared planned scope
 - Missing verification/record hints at task stop
@@ -43,6 +45,7 @@ This project intentionally treats some constraints as hook-enforced:
 1. Initialize local state:
 
    - `bash scripts/init_local_state.sh`
+   - optional target workspace: `bash scripts/init_local_state.sh --target-root ../your-project`
 
 2. Fill preflight fields before execution.
 
@@ -57,6 +60,8 @@ This project intentionally treats some constraints as hook-enforced:
    - Codex: `bash scripts/deploy_codex_runtime.sh`
    - Claude Code (local-only): `bash scripts/deploy_claude_runtime.sh`
    - Claude Code (project-level): `bash scripts/deploy_claude_runtime.sh --scope project`
+   - optional target runtime path: `--target /abs/path/to/.cursor|.codex|.claude`
+   - deploy scripts auto-initialize local state in the target workspace (disable with `--no-init`)
 
 5. Hooks are injected into runtime config files:
 
@@ -69,12 +74,24 @@ This project intentionally treats some constraints as hook-enforced:
    - current mode: `bash scripts/set_pretooluse_mode.sh show`
    - strict blocking: `bash scripts/set_pretooluse_mode.sh normal`
    - warning-only shell gate: `bash scripts/set_pretooluse_mode.sh sandbox`
+   - set mode for another workspace: `bash scripts/set_pretooluse_mode.sh --target-root ../your-project sandbox`
+
+7. Emergency rollback (remove harness runtime settings):
+
+   - uninstall from current workspace root:
+     `bash scripts/uninstall.sh --target-root ..`
+   - include local state cleanup:
+     `bash scripts/uninstall.sh --target-root .. --purge-state`
+   - preview only:
+     `bash scripts/uninstall.sh --target-root .. --dry-run`
 
 ## Notes
 
 - Local records are intentionally `local-only` and excluded from git.
 - Local runtime adapters under `.cursor/`, `.codex/`, and `.claude/` are also excluded from git.
 - Deploy scripts are merge-aware and preserve unrelated user config where possible.
+- Deploy scripts rewrite hook commands with `LIGHT_HARNESS_ROOT=<target-workspace-root>` so hooks read state from the target workspace.
+- `scripts/uninstall.sh` removes harness-managed hooks, Cursor rule files, the Codex feature flag entry, and the pre-tool mode file.
 - The hook script is conservative by default and can block in strict events.
 - `sandbox` mode only relaxes the pre-tool-use shell/Bash gate from block to warn.
 - `rm` is forbidden in all modes and must go through `pending-rm.md`.
