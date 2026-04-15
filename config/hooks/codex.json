@@ -1,0 +1,49 @@
+{
+  "runtime": "codex",
+  "mergeMode": "hooks_file",
+  "managedCommands": [
+    "python3 \"scripts/light_harness_hook.py\" --event beforeSubmitPrompt --strict",
+    "python3 \"scripts/light_harness_hook.py\" --event beforeShellExecution --strict",
+    "python3 \"scripts/light_harness_hook.py\" --event stop"
+  ],
+  "config": {
+    "hooks": {
+      "UserPromptSubmit": [
+        {
+          "matcher": "",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 \"scripts/light_harness_hook.py\" --event beforeSubmitPrompt --strict",
+              "statusMessage": "light-harness: checking preflight"
+            }
+          ]
+        }
+      ],
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 \"scripts/light_harness_hook.py\" --event beforeShellExecution --strict",
+              "statusMessage": "light-harness: checking risk tier"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "matcher": "",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 \"scripts/light_harness_hook.py\" --event stop",
+              "statusMessage": "light-harness: checking record"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+.agent-memory/records/
+.agent-memory/tmp/
+.cursor/
+.codex/
+.claude/
+*.pyc
+__pycache__/

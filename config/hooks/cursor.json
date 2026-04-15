@@ -1,0 +1,35 @@
+{
+  "runtime": "cursor",
+  "mergeMode": "hooks_file",
+  "managedCommands": [
+    "python3 \"scripts/light_harness_hook.py\" --event beforeSubmitPrompt --strict",
+    "python3 \"scripts/light_harness_hook.py\" --event beforeShellExecution --strict",
+    "python3 \"scripts/light_harness_hook.py\" --event afterFileEdit",
+    "python3 \"scripts/light_harness_hook.py\" --event stop"
+  ],
+  "config": {
+    "version": 1,
+    "hooks": {
+      "beforeSubmitPrompt": [
+        {
+          "command": "python3 \"scripts/light_harness_hook.py\" --event beforeSubmitPrompt --strict"
+        }
+      ],
+      "beforeShellExecution": [
+        {
+          "command": "python3 \"scripts/light_harness_hook.py\" --event beforeShellExecution --strict"
+        }
+      ],
+      "afterFileEdit": [
+        {
+          "command": "python3 \"scripts/light_harness_hook.py\" --event afterFileEdit"
+        }
+      ],
+      "stop": [
+        {
+          "command": "python3 \"scripts/light_harness_hook.py\" --event stop"
+        }
+      ]
+    }
+  }
+}

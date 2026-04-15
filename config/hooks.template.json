@@ -1,0 +1,9 @@
+{
+  "deprecated": true,
+  "message": "Use runtime-specific manifests under config/hooks/ instead of this legacy template.",
+  "manifests": {
+    "cursor": "config/hooks/cursor.json",
+    "codex": "config/hooks/codex.json",
+    "claude": "config/hooks/claude.json"
+  }
+}
